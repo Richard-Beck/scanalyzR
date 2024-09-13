@@ -1,0 +1,328 @@
+---
+title: "scRNAseq analysis"
+author: "Richard J Beck"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+The goal of the scRNAseq analysis is to come up with an annotated reference dataset that can be used to deconvolute the spatial data. Unfortunately, this analysis creates another problem - we can cluster the single cell data but how do we annotate those cell types?
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir="~/../repos/scanalyzR/")
+```
+
+This analysis uses the scTumor_Tissue dataset which can be found here https://doi.org/10.5061/dryad.h70rxwdmj, which is expected to be saved in the following location:
+
+```{r}
+data_path <- "data/scRNAseq/raviGBM/"
+```
+
+```{r}
+
+library(Seurat)
+library(dplyr)
+library(SingleR)
+library(SingleCellExperiment)
+library(celldex)
+```
+
+
+Load each of the 5 donor datasets into Seurat and merge them using the standard Seurat methodology.
+
+```{r}
+
+ff <- list.files(data_path)
+
+x <- lapply(ff,function(fi){
+  xi <- Read10X(data.dir = paste0(data_path,fi,"/outs/filtered_feature_bc_matrix"))
+  xi <- CreateSeuratObject(counts = xi, project = fi)
+  ##downsample to ensure datasets are weighted equally and speed analysis a bit
+  xi <- subset(xi, cells = sample(Cells(xi), 300))
+  xi <- NormalizeData(xi)
+  xi <- FindVariableFeatures(xi)
+})
+
+anchors <- FindIntegrationAnchors(object.list = x, dims = 1:30)
+
+y <- IntegrateData(anchorset = anchors, dims = 1:30)
+y <- ScaleData(y)
+y <- RunPCA(y,npcs = 30)
+
+DimHeatmap(y, dims = 1:15, cells = 500, balanced = TRUE)
+
+y <- RunUMAP(y, reduction = "pca", dims = 1:15)
+
+y <- FindNeighbors(y, dims = 1:15)
+y <- FindClusters(y, resolution = 0.5)
+
+DimPlot(y, reduction = "umap",group.by = "orig.ident")
+DimPlot(y, reduction = "umap",group.by = "ident")
+
+```
+I suspect that clusters 1,6&7 are immune cells, but I don't know how to tell for sure. Hard to find vasculature here. Need to think about how best to proceed.
+```{r}
+
+y.markers <- FindAllMarkers(y, only.pos = TRUE)
+
+y.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 10) %>%
+    ungroup() -> top10
+plt <- DoHeatmap(y, features = top10$gene) + NoLegend()
+
+ggplot2::ggsave("analyses/scRNAseq/marker_heatmap.png",plot=plt,width=12,height=12,units="in")
+saveRDS(top10,"analyses/scRNAseq/markers.Rds")
+
+```
+
+
+Following methodology in https://www.nature.com/articles/s41467-023-39933-0#Sec10 
+
+Dataset containing CD4/CD8 immune cells:
+```{r}
+
+data_path <- "data/scRNAseq/GSE163108_RAW/"
+
+x <- Seurat::Read10X_h5("data/scRNAseq/GSE163108_RAW/E10_raw_feature_bc_matrix.h5")
+
+m <- read.csv("data/scRNAseq/GSE163108_RAW/GSE163108_metadata_10x.csv")
+
+m <- m[m$sampleid=="E10_GEX",]
+
+cd8_ids <- sample(which(m$annotate_Tcelltype=="CD8+"),200)
+cd4_ids <- sample(which(m$annotate_Tcelltype=="CD4+"),200)
+
+cd4_barcodes <- m$X[cd4_ids]
+cd4_barcodes <- sapply(cd4_barcodes,function(bi){
+  bi <- tail(unlist(strsplit(bi,split="_")),1)
+  paste0(bi,"-1")
+})
+
+cd8_barcodes <- m$X[cd8_ids]
+cd8_barcodes <- sapply(cd8_barcodes,function(bi){
+  bi <- tail(unlist(strsplit(bi,split="_")),1)
+  paste0(bi,"-1")
+})
+
+xcd4 <- x[,which(colnames(x)%in%cd4_barcodes)]
+xcd8 <- x[,which(colnames(x)%in%cd8_barcodes)]
+
+x <- cbind(xcd4,xcd8)
+
+x <- CreateSeuratObject(counts = x, project = "CD4/8")
+x <- NormalizeData(x)
+x <- FindVariableFeatures(x)
+
+
+x <- ScaleData(x)
+x <- RunPCA(x,npcs = 30)
+
+DimHeatmap(x, dims = 1:15, cells = 400, balanced = TRUE)
+
+x <- RunUMAP(x, reduction = "pca", dims = 1:5)
+
+x <- FindNeighbors(x, dims = 1:5)
+x <- FindClusters(x, resolution = 0.5)
+
+anno <- c(rep("CD4",200),rep("CD8",200))
+x$orig.ident <- anno
+
+DimPlot(x, reduction = "umap",group.by = "orig.ident")
+DimPlot(x, reduction = "umap",group.by = "ident")
+
+```
+Labelled data from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5810554/
+
+
+```{r}
+
+cluster_lut <- c("#8C564B"= "tumor", 
+                 "#AEC7E8"= "Oligodendro",
+                 "#9467BD"= "OPCs",
+                 "#FF9896"= "Myeloid",
+                 "#D62728"= "Myeloid",
+                 "#2CA02C"= "Neurons",
+                 "#FF7F0E"= "Vasculature",
+                 "#1F77B4"= "tumor",
+                 "#C5B0D5"= "Astrocyte",
+                 "#98DF8A"= "Vasculature",
+                 "#C49C94"= "Vasculature",
+                 "#FFBB78"= "tumor")
+
+saveRDS(cluster_lut,"data/scRNAseq/sypros_darmanis/cluster_lut.Rds")
+
+```
+
+```{r}
+
+scm <- data.table::fread("data/scRNAseq/sypros_darmanis/GBM_raw_gene_counts.csv")
+rcm <- scm$V1
+scm <- scm[,-1]
+scm <- as(as.matrix(scm), "sparseMatrix")
+rownames(scm) <- rcm
+
+x <- data.table::fread("data/scRNAseq/sypros_darmanis/GBM_metadata.csv")
+lut <- cluster_lut[x$Cluster_2d_color]
+names(lut) <- x$V1
+
+ids <- lut[colnames(scm)]
+
+x <- CreateSeuratObject(counts = scm, project = "GBMlab")
+x <- NormalizeData(x)
+x <- FindVariableFeatures(x)
+
+
+x <- ScaleData(x)
+x <- RunPCA(x,npcs = 30)
+
+DimHeatmap(x, dims = 1:3o, cells = 400, balanced = TRUE)
+
+x <- RunUMAP(x, reduction = "pca", dims = 1:20)
+
+x <- FindNeighbors(x, dims = 1:20)
+x <- FindClusters(x, resolution = 0.5)
+
+x$orig.ident <- ids
+
+DimPlot(x, reduction = "umap",group.by = "orig.ident")
+DimPlot(x, reduction = "umap",group.by = "ident")
+```
+Now let's sample some stuff from each dataset, attempt to integrate them, and see if the result makes sense:
+
+Load up the data from Ravi and sample 100 cells from each sample:
+```{r}
+data_path_ravi <- "data/scRNAseq/raviGBM/"
+ff <- list.files(data_path_ravi)
+
+x1 <- lapply(ff,function(fi){
+  xi <- Read10X(data.dir = paste0(data_path_ravi,
+                                  fi,"/outs/filtered_feature_bc_matrix"))
+  xi <- CreateSeuratObject(counts = xi, project = fi)
+  ##downsample to ensure datasets are weighted equally and speed analysis a bit
+  xi <- subset(xi, cells = sample(Cells(xi), 200))
+  xi <- NormalizeData(xi)
+  xi <- FindVariableFeatures(xi)
+  xi$anno <- "none"
+  xi
+})
+
+```
+
+
+```{r}
+
+scm <- data.table::fread("data/scRNAseq/sypros_darmanis/GBM_raw_gene_counts.csv")
+rcm <- scm$V1
+scm <- scm[,-1]
+scm <- as(as.matrix(scm), "sparseMatrix")
+rownames(scm) <- rcm
+
+x <- data.table::fread("data/scRNAseq/sypros_darmanis/GBM_metadata.csv")
+x$subtype <- cluster_lut[x$Cluster_2d_color]
+
+x <- do.call(rbind,lapply(unique(x$subtype),function(si){
+  xi <- x[x$subtype==si,]
+  if(nrow(xi)<200) return(xi)
+  xi[sample(1:nrow(xi),200),]
+}))
+lut <- x$subtype
+names(lut) <- x$V1
+scm <- scm[,which(colnames(scm)%in%x$V1)]
+ids2 <- lut[colnames(scm)]
+
+x2 <- CreateSeuratObject(counts = scm, project = "GBMlab")
+x2 <- NormalizeData(x2)
+x2 <- FindVariableFeatures(x2)
+x2$anno <- ids2
+x2 <- list(x2)
+
+```
+
+```{r}
+
+data_path <- "data/scRNAseq/GSE163108_RAW/"
+
+x <- Seurat::Read10X_h5("data/scRNAseq/GSE163108_RAW/E10_raw_feature_bc_matrix.h5")
+
+m <- read.csv("data/scRNAseq/GSE163108_RAW/GSE163108_metadata_10x.csv")
+
+m <- m[m$sampleid=="E10_GEX",]
+
+cd8_ids <- sample(which(m$annotate_Tcelltype=="CD8+"),200)
+cd4_ids <- sample(which(m$annotate_Tcelltype=="CD4+"),200)
+
+cd4_barcodes <- m$X[cd4_ids]
+cd4_barcodes <- sapply(cd4_barcodes,function(bi){
+  bi <- tail(unlist(strsplit(bi,split="_")),1)
+  paste0(bi,"-1")
+})
+
+cd8_barcodes <- m$X[cd8_ids]
+cd8_barcodes <- sapply(cd8_barcodes,function(bi){
+  bi <- tail(unlist(strsplit(bi,split="_")),1)
+  paste0(bi,"-1")
+})
+
+xcd4 <- x[,which(colnames(x)%in%cd4_barcodes)]
+xcd8 <- x[,which(colnames(x)%in%cd8_barcodes)]
+
+x <- cbind(xcd4,xcd8)
+
+x <- CreateSeuratObject(counts = x, project = "CD4/8")
+x <- NormalizeData(x)
+x <- FindVariableFeatures(x)
+anno <- c(rep("CD4",200),rep("CD8",200))
+x$anno <- anno
+
+x3 <- list(x)
+
+```
+
+```{r}
+
+x <- c(x1,x2)
+anchors <- FindIntegrationAnchors(object.list = x, dims = 1:30)
+
+y <- IntegrateData(anchorset = anchors, dims = 1:30)
+y <- ScaleData(y)
+y <- RunPCA(y,npcs = 30)
+
+DimHeatmap(y, dims = 1:15, cells = 500, balanced = TRUE)
+
+y <- RunUMAP(y, reduction = "pca", dims = 1:20)
+
+y <- FindNeighbors(y, dims = 1:20)
+y <- FindClusters(y, resolution = 0.5)
+
+DimPlot(y, reduction = "umap",group.by = "orig.ident")
+DimPlot(y, reduction = "umap",group.by = "anno")
+DimPlot(y, reduction = "umap",group.by = "ident")
+
+DimPlot(y, reduction = "umap",group.by = "anno",split.by = "orig.ident")
+
+FeaturePlot(y,features=c("CD93", "PECAM1", "SCARB3", "COLEC11", "COLEC12", "CD299", "CD147", "CD105", "CD248", "FABP5", "CD54", "CD102", "CD49D", "ITGB7", "CD18", "CD146", "CD112", "EDG1", "EDG5", "EDG3", "EDG6", "EDG8", "CD62E", "SELP", "CD150", "PLXDC1", "ANTXR1", "CLEC4A")
+)
+```
+
+```{r}
+
+x <- c(x3,x2)
+anchors <- FindIntegrationAnchors(object.list = x, dims = 1:30)
+
+y <- IntegrateData(anchorset = anchors, dims = 1:30)
+y <- ScaleData(y)
+y <- RunPCA(y,npcs = 30)
+
+DimHeatmap(y, dims = 1:15, cells = 500, balanced = TRUE)
+
+y <- RunUMAP(y, reduction = "pca", dims = 1:15)
+
+y <- FindNeighbors(y, dims = 1:15)
+y <- FindClusters(y, resolution = 0.5)
+
+DimPlot(y, reduction = "umap",group.by = "orig.ident")
+DimPlot(y, reduction = "umap",group.by = "ident")
+
+DimPlot(y, reduction = "umap",group.by = "anno",split.by = "orig.ident")
+```

@@ -1,0 +1,102 @@
+---
+title: "spata basic analysis"
+author: "Richard J Beck"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+The goal of this pipeline is to run thru some of the spata tutorials to gain a better understanding of how they are processing their data.
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir="~/../repos/scanalyzR/")
+```
+
+```{r}
+
+library(SPATA2)
+
+```
+
+COPY NUMBER VARIATIONS:
+
+```{r}
+
+
+x <- loadExampleObject(sample_name = "UKF269T")
+
+# only histology
+plotSurface(x, pt_alpha = 0)
+
+
+```
+
+Uses infercnv to assess CNAs. What really gets me is that the CNA values are so low! So e.g. we have these CNA peaks centered on about 0.95 & 1.05. So does this imply a really low tumor cell fraction?? What further piz
+```{r}
+
+x <-
+  runCNV(
+    object = x,
+    # the directory must exist in your file system
+    directory_cnv_folder = "data/scRNAseq/tmp/", 
+    cnv_prefix = "Chr"
+    )
+
+plotCnvHeatmap(object = x)
+
+plotCnvLineplot(
+  object = x,
+  n_bins_bcsp = 1000,
+  n_bins_genes = 1000,
+  )
+
+plotSurface(
+  object = x, 
+  color_by = "Chr7", 
+  pt_clrsp = "Reds"
+)
+
+```
+Lets run infercnv on one of scRNAseq data samples.
+
+
+```{r}
+library(ggplot2)
+x <- read.csv("data/tmp/269_T.csv")
+
+p <- ggplot(x,aes(x=xcoord,y=ycoord,color=preds))+
+  scale_color_viridis_c()+
+  geom_point()
+p
+```
+```{r}
+
+dir <- "data/tmp/Spatial_GBM_PloiViT/"
+x <- lapply(list.files(dir),function(fi) read.csv(paste0(dir,fi)))
+
+for(i in x){
+  p <- ggplot(i,aes(x=xcoord,y=ycoord,color=preds))+
+  scale_color_viridis_c()+
+  geom_point()
+plot(p)
+}
+```
+
+```{r}
+x <- readRDS("data/tmp/Boston_269_T.RDS")
+df <- x@coordinates$'269_T'
+f <- x@fdata$'269_T'
+f <- f[,c("barcodes","pred.tumor","Nr_of_cells")]
+
+df <- merge(f,df,by=c("barcodes"))
+
+p <- ggplot(df,aes(x=x,y=y,color=pred.tumor))+
+  geom_point()+
+  scale_color_viridis_c()
+p
+
+p <- ggplot(df,aes(x=x,y=y,color=Nr_of_cells))+
+  geom_point()+
+  scale_color_viridis_c()
+p
+
+```
